@@ -1,0 +1,79 @@
+[build-system]
+requires = ["hatchling>=1.21,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rosbag-inspect"
+dynamic = ["version"]
+description = "Health-check a ROS 2 bag (SQLite3 or MCAP) without a ROS install, and explain what is wrong with the recording."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+authors = [{ name = "Navaneeth KG" }]
+keywords = ["ros2", "rosbag", "rosbag2", "mcap", "cdr", "robotics", "lidar", "imu", "tf"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Debuggers",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.11,<3",
+    "pytest>=8,<10",
+    "pytest-cov>=5,<8",
+    "ruff>=0.6,<1",
+]
+
+[project.scripts]
+rosbag-inspect = "rosbag_inspect.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/projectbin07-stack/rosbag-inspect"
+Issues = "https://github.com/projectbin07-stack/rosbag-inspect/issues"
+Changelog = "https://github.com/projectbin07-stack/rosbag-inspect/blob/main/CHANGELOG.md"
+
+[tool.hatch.version]
+path = "src/rosbag_inspect/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rosbag_inspect"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+files = ["src", "tests"]
+mypy_path = ["src", "tests"]
+explicit_package_bases = true
+
+[tool.coverage.run]
+source = ["rosbag_inspect"]
+
+[tool.coverage.report]
+exclude_also = ["if __name__ == .__main__.:"]

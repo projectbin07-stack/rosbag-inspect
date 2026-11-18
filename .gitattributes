@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.png binary
+*.db3 binary
+*.mcap binary
