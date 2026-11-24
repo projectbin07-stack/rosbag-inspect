@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import importlib
 import shutil
 import sqlite3
 import struct
 from pathlib import Path
+from types import ModuleType
 
 import pytest
 
 from bagwriter import Record, write_mcap, write_sqlite_bag
+from rosbag_inspect import bag as bag_module
 from rosbag_inspect import mcap as mcap_module
 from rosbag_inspect.analysis import analyze
 from rosbag_inspect.bag import BagError, open_bag
@@ -153,8 +156,48 @@ def test_chunk_compression_support(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.raises(McapError, match="lz4 chunk"):
         decompress_chunk("lz4", b"garbage", 10)
     monkeypatch.setattr(mcap_module, "_zstd_decompressor", lambda: None)
-    with pytest.raises(McapError, match=r"zstd-compressed chunks need Python 3\.14"):
+    with pytest.raises(
+        McapError, match=r"zstd-compressed chunks: decompression needs Python 3\.14 .* zstandard"
+    ):
         decompress_chunk("zstd", b"", 0)
+
+
+def _without_stdlib_zstd(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make ``compression.zstd`` unimportable, as on Python 3.10-3.13."""
+    real = importlib.import_module
+
+    def fake(name: str, package: str | None = None) -> ModuleType:
+        if name == "compression.zstd":
+            raise ImportError(name)
+        return real(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", fake)
+
+
+def test_zstd_chunks_with_zstandard_package(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    zstandard = pytest.importorskip("zstandard")
+    recs = _string_records("/z", [S + i for i in range(20)])
+    path = tmp_path / "zstd.mcap"
+    write_mcap(path, recs, compression="zstd", chunk_size=100)
+    _without_stdlib_zstd(monkeypatch)
+    func = mcap_module._zstd_decompressor()
+    assert func is not None
+    # A frame without a content size in its header (streaming writers) is read too.
+    stream = zstandard.ZstdCompressor(write_content_size=False).compressobj()
+    frame = stream.compress(b"abc" * 50) + stream.flush()
+    assert func(frame) == b"abc" * 50
+    assert [t for _, t in _payloads(path)] == [S + i for i in range(20)]
+
+
+def test_zstd_unavailable_message_compression(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mcap_module, "_zstd_decompressor", lambda: None)
+    monkeypatch.setattr(bag_module, "_zstd_decompressor", lambda: None)
+    with pytest.raises(BagError, match=r"per-message zstd compression.*rosbag-inspect\[zstd\]"):
+        bag_module._message_decompressor("zstd")
 
 
 def test_zstd_chunks_with_stdlib_decoder(tmp_path: Path) -> None:

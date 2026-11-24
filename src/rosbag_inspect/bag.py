@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import heapq
-import importlib
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
 
-from .mcap import McapError, McapReader
+from .mcap import ZSTD_HELP, McapError, McapReader, _zstd_decompressor
 from .metadata import BagMetadata, MetadataError, read_metadata
 from .msgdef import MsgDefError, Registry, normalize_type
 from .sqlite_storage import SqliteBagError, SqliteReader
@@ -165,14 +164,12 @@ def normalize_type_safe(name: str) -> str:
 def _message_decompressor(fmt: str) -> Callable[[bytes], bytes]:
     if fmt != "zstd":
         raise BagError(f"unsupported per-message compression {fmt!r}")
-    try:
-        module = importlib.import_module("compression.zstd")
-    except ImportError:
+    func = _zstd_decompressor()
+    if func is None:
         raise BagError(
-            "this bag uses per-message zstd compression, which needs Python 3.14+ "
-            "(standard-library compression.zstd); decompress it with 'ros2 bag convert' first"
-        ) from None
-    func: Callable[[bytes], bytes] = module.decompress
+            f"this bag uses per-message zstd compression, whose decompression {ZSTD_HELP}; "
+            "or decompress it with 'ros2 bag convert' first"
+        )
     return func
 
 

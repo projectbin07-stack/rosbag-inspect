@@ -38,6 +38,8 @@ dev = [
     "ruff>=0.6,<1",
 ]
 
+zstd = ["zstandard>=0.22,<1"]
+
 [project.scripts]
 rosbag-inspect = "rosbag_inspect.cli:main"
 

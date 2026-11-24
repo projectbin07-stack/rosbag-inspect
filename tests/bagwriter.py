@@ -150,8 +150,13 @@ def _compress(compression: str, data: bytes) -> bytes:
     if compression == "lz4":
         return lz4_compress_frame(data)
     if compression == "zstd":
-        from compression import zstd  # type: ignore[import-not-found,unused-ignore]
+        try:
+            from compression import zstd  # type: ignore[import-not-found,unused-ignore]
+        except ImportError:
+            import zstandard
 
+            out: bytes = zstandard.ZstdCompressor().compress(data)
+            return out
         result: bytes = zstd.compress(data)
         return result
     raise ValueError(compression)

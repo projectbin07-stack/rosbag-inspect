@@ -193,12 +193,32 @@ def _parse_chunk_index(content: bytes) -> ChunkIndex:
 
 
 def _zstd_decompressor() -> Callable[[bytes], bytes] | None:
+    """zstd decompression: the standard library's on Python 3.14+, else ``zstandard`` if
+    installed (``pip install rosbag-inspect[zstd]``), else None."""
     try:
         module = importlib.import_module("compression.zstd")
     except ImportError:
+        pass
+    else:
+        func: Callable[[bytes], bytes] = module.decompress
+        return func
+    try:
+        zstandard = importlib.import_module("zstandard")
+    except ImportError:
         return None
-    func: Callable[[bytes], bytes] = module.decompress
-    return func
+
+    def decompress(data: bytes) -> bytes:
+        # Frames written without a content size need the streaming reader.
+        out: bytes = zstandard.ZstdDecompressor().decompressobj().decompress(data)
+        return out
+
+    return decompress
+
+
+ZSTD_HELP = (
+    "needs Python 3.14 or newer (standard-library compression.zstd) or the zstandard package "
+    "(pip install 'rosbag-inspect[zstd]')"
+)
 
 
 def decompress_chunk(compression: str, data: bytes, uncompressed_size: int) -> bytes:
@@ -214,8 +234,7 @@ def decompress_chunk(compression: str, data: bytes, uncompressed_size: int) -> b
         func = _zstd_decompressor()
         if func is None:
             raise McapError(
-                "zstd-compressed chunks need Python 3.14 or newer (standard-library "
-                "compression.zstd); re-run with Python 3.14+ or convert the bag with "
+                f"zstd-compressed chunks: decompression {ZSTD_HELP}; or convert the bag with "
                 "'mcap compress --compression none' / 'ros2 bag convert'"
             )
         try:
