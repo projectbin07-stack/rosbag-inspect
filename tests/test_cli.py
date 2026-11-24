@@ -8,14 +8,15 @@ import re
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from rosbag_inspect.analysis import analyze
 from rosbag_inspect.bag import open_bag
-from rosbag_inspect.cdr import SkippedBytes
+from rosbag_inspect.cdr import SkippedBytes, decode
 from rosbag_inspect.cli import EXIT_ERROR, EXIT_OK, EXIT_WARN, main
-from rosbag_inspect.export import flat_columns, to_jsonable
+from rosbag_inspect.export import array_cell, flat_columns, flatten, number_text, to_jsonable
 from rosbag_inspect.html_report import render_html
 from rosbag_inspect.msgdef import Registry
 
@@ -88,6 +89,13 @@ def test_echo_and_export(
     assert main(["echo", str(fixtures["mcap"]), "/scan", "--limit", "1"]) == 0
     scan = json.loads(capsys.readouterr().out)["message"]
     assert scan["ranges"][:10] == ["Infinity"] * 10
+    assert (
+        main(["echo", str(fixtures["mcap"]), "/scan", "--limit", "1", "--nonfinite", "null"]) == 0
+    )
+    scan_null = json.loads(capsys.readouterr().out)["message"]
+    assert scan_null["ranges"][:10] == [None] * 10
+    assert scan_null["ranges"][10:] == scan["ranges"][10:]
+    assert scan_null["range_max"] == scan["range_max"]
 
     out = tmp_path / "odom.csv"
     assert main(["export", str(fixtures["mcap"]), "/odom", str(out)]) == 0
@@ -105,6 +113,38 @@ def test_echo_and_export(
     text = capsys.readouterr().out.splitlines()
     assert text[0].startswith("log_time_ns,stamp_ns,header.stamp.sec,header.stamp.nanosec,")
     assert "name.length" in text[0]
+
+
+def test_export_arrays_keeps_laserscan_ranges(
+    fixtures: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    out = tmp_path / "scan.csv"
+    assert main(["export", str(fixtures["mcap"]), "/scan", str(out)]) == 0
+    with out.open(encoding="utf-8") as f:
+        plain = next(csv.DictReader(f))
+    assert "ranges" not in plain
+    assert main(["export", str(fixtures["mcap"]), "/scan", str(out), "--arrays"]) == 0
+    assert f"column(s) to {out}" in capsys.readouterr().err
+    with out.open(encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    first = rows[0]
+    # Every element is kept, in order, and reads back as the decoded float32 value.
+    cells = first["ranges"].split(" ")
+    ranges = [float(v) for v in cells]
+    assert len(ranges) == int(first["ranges.length"])
+    assert cells[:10] == ["inf"] * 10
+    with open_bag(fixtures["mcap"]) as bag:
+        raw = next(bag.messages(["/scan"]))
+        decoded = decode(bag.registry, "sensor_msgs/msg/LaserScan", raw.data)
+    assert ranges == decoded["ranges"]
+    assert first["intensities.length"] == str(len(decoded["intensities"]))
+    # The plain export's columns are all still there, in the same order.
+    assert [c for c in first if c not in ("ranges", "intensities")] == list(plain)
+
+    assert main(["export", str(fixtures["sqlite"]), "/joint_states", "-", "--arrays"]) == 0
+    head = capsys.readouterr().out.splitlines()[0].split(",")
+    assert head[head.index("position.length") + 1] == "position"
+    assert "name" not in head  # strings stay out
 
 
 def test_cli_errors(
@@ -155,6 +195,23 @@ def test_export_helpers() -> None:
     }
     assert to_jsonable(b"\x01\x02") == [1, 2]
     assert to_jsonable(bytes(100)) == {"bytes": 100}
+    assert to_jsonable([float("nan"), float("inf"), 1.5], nonfinite="null") == [None, None, 1.5]
+    with pytest.raises(ValueError, match="nonfinite"):
+        to_jsonable(1.0, nonfinite="zero")
+    assert "ranges" in flat_columns(reg, "sensor_msgs/msg/LaserScan", arrays=True)
+    assert "header.frame_id" not in flat_columns(reg, "sensor_msgs/msg/LaserScan", arrays=True)
+    assert array_cell([1.0, float("inf"), float("-inf"), 0.1, True]) == "1.0 inf -inf 0.1 1"
+    assert array_cell(SkippedBytes(5000)) == ""
+    assert array_cell(b"\x00\x07") == "0 7"
+    assert number_text(float("nan")) == "nan"
+    assert number_text(3) == "3"
+    msg: dict[str, Any] = {"header": {"stamp": {"sec": 1, "nanosec": 2}, "frame_id": "f"}}
+    msg |= {"name": ["a"], "position": [0.5, float("nan")], "velocity": [], "effort": []}
+    row = flatten(reg, "sensor_msgs/msg/JointState", msg, arrays=True)
+    assert row["position.length"] == 2
+    assert row["position"] == "0.5 nan"
+    assert row["velocity"] == ""
+    assert "name" not in row
 
 
 # -- HTML ----------------------------------------------------------------------------------------

@@ -15,7 +15,7 @@ from . import __version__
 from .analysis import analyze, stamp_ns
 from .bag import Bag, BagError, open_bag
 from .cdr import CdrError, decode
-from .export import flat_columns, flatten, to_jsonable
+from .export import NONFINITE_MODES, flat_columns, flatten, to_jsonable
 from .findings import ERROR, INFO, WARNING, Report
 from .html_report import render_html
 from .msgdef import MsgDefError
@@ -130,11 +130,24 @@ def build_parser() -> argparse.ArgumentParser:
     echo.add_argument(
         "--limit", type=int, default=10, metavar="N", help="messages to print (default 10, 0 = all)"
     )
+    echo.add_argument(
+        "--nonfinite",
+        choices=NONFINITE_MODES,
+        default="string",
+        help='write NaN and infinities as the strings "NaN"/"Infinity"/"-Infinity" '
+        "(default) or as null",
+    )
 
     exp = sub.add_parser("export", help="write the numeric fields of a topic to CSV")
     exp.add_argument("bag", help="bag directory, .db3 or .mcap file")
     exp.add_argument("topic")
     exp.add_argument("output", help="CSV file to write ('-' for stdout)")
+    exp.add_argument(
+        "--arrays",
+        action="store_true",
+        help="also write each numeric variable-length array (e.g. LaserScan ranges) in full, "
+        "as one cell of space-separated numbers (inf, -inf and nan as written)",
+    )
     return parser
 
 
@@ -268,7 +281,11 @@ def _echo(args: argparse.Namespace, bag: Bag) -> int:
         raise BagError(f"{args.topic}: no definition for {topic.type or 'its type'}; cannot decode")
     for printed, raw in enumerate(bag.messages([args.topic]), start=1):
         msg = decode(bag.registry, topic.type, raw.data)
-        line = {"topic": raw.topic, "log_time_ns": raw.log_time, "message": to_jsonable(msg)}
+        line = {
+            "topic": raw.topic,
+            "log_time_ns": raw.log_time,
+            "message": to_jsonable(msg, args.nonfinite),
+        }
         sys.stdout.write(json.dumps(line, allow_nan=False) + "\n")
         if args.limit and printed >= args.limit:
             break
@@ -281,7 +298,7 @@ def _export(args: argparse.Namespace, bag: Bag) -> int:
         raise BagError(f"topic {args.topic} not in bag (see 'rosbag-inspect info')")
     if not bag.decodable(args.topic):
         raise BagError(f"{args.topic}: no definition for {topic.type or 'its type'}; cannot decode")
-    columns = flat_columns(bag.registry, topic.type)
+    columns = flat_columns(bag.registry, topic.type, args.arrays)
     header_stamp = "header.stamp.sec" in columns
     fieldnames = ["log_time_ns", *(["stamp_ns"] if header_stamp else []), *columns]
     handle: TextIO
@@ -295,7 +312,10 @@ def _export(args: argparse.Namespace, bag: Bag) -> int:
         writer.writeheader()
         for raw in bag.messages([args.topic]):
             msg = decode(bag.registry, topic.type, raw.data)
-            row = {"log_time_ns": raw.log_time, **flatten(bag.registry, topic.type, msg)}
+            row = {
+                "log_time_ns": raw.log_time,
+                **flatten(bag.registry, topic.type, msg, args.arrays),
+            }
             if header_stamp:
                 row["stamp_ns"] = stamp_ns(msg["header"])
             writer.writerow(row)
