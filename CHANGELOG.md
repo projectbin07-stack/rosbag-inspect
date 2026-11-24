@@ -4,6 +4,28 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-11-25
+
+### Added
+
+- `export --arrays`: every numeric variable-length array (LaserScan `ranges` and `intensities`,
+  JointState `position` / `velocity` / `effort`, ...) is also written in full, in a column of its
+  own name, as space-separated numbers. Floats use Python's shortest round-trip form, so `inf`,
+  `-inf` and `nan` are kept and `float()` reads every value back exactly. The default export is
+  unchanged. Library: `flatten(..., arrays=True)`, `flat_columns(..., arrays=True)`,
+  `array_cell()`, `number_text()`.
+- `echo --nonfinite null`: NaN and infinities as JSON `null` instead of the strings `"NaN"`,
+  `"Infinity"`, `"-Infinity"` (the default, unchanged). Library: `to_jsonable(value, nonfinite=)`.
+- Optional `zstd` extra (`pip install "rosbag-inspect[zstd]"`, the `zstandard` package): zstd
+  MCAP chunks and per-message zstd compression on Python 3.10-3.13 (3.14+ keeps using the
+  standard library's `compression.zstd`). Frames without a content size are read too.
+
+### Fixed
+
+- A LaserScan could not leave the tool with its beams: `export` kept only `ranges.length` and
+  `echo` wrote infinities as text (ecosystem audit finding 20).
+- The zstd error message now names both ways to read such bags.
+
 ## [0.1.0] - 2026-11-19
 
 ### Added
@@ -28,4 +50,5 @@ All notable changes to this project are documented here. The format follows
   latency histograms, light and dark themes, no JavaScript.
 - Test fixture writers (SQLite3, MCAP, LZ4) and a simulated drive with deliberate faults.
 
+[0.2.0]: https://github.com/projectbin07-stack/rosbag-inspect/releases/tag/v0.2.0
 [0.1.0]: https://github.com/projectbin07-stack/rosbag-inspect/releases/tag/v0.1.0

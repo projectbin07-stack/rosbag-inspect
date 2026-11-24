@@ -29,7 +29,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,zstd]"
       - name: Lint
         run: ruff check .
       - name: Format
@@ -47,6 +47,9 @@ jobs:
           rosbag-inspect info fixtures/drive.mcap --json > info.json
           rosbag-inspect echo fixtures/drive_lz4.mcap /imu --limit 2
           rosbag-inspect export fixtures/drive_nosummary.mcap /odom odom.csv
+          rosbag-inspect export fixtures/drive.mcap /scan scan.csv --arrays
+          python -c "import csv; r = next(csv.DictReader(open('scan.csv'))); v = [float(x) for x in r['ranges'].split()]; assert len(v) == int(r['ranges.length']) and v[0] == float('inf'), v[:3]"
+          rosbag-inspect echo fixtures/drive.mcap /scan --limit 1 --nonfinite null | python -c "import json, sys; m = json.loads(sys.stdin.read())['message']; assert m['ranges'][0] is None"
           set +e
           rosbag-inspect check fixtures/drive.mcap --report report.html --expect /scan:10
           test $? -eq 2 || exit 1

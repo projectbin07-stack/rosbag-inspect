@@ -46,8 +46,10 @@ Reading
 - MCAP: summary section and chunk index when present (only chunks containing the requested topics
   are read), linear scan otherwise, which also recovers data from files cut off by an interrupted
   recording. Unchunked and chunked files; chunk CRCs are verified.
-- Chunk compression: none and LZ4 (pure-Python decoder) everywhere; zstd on Python 3.14+ through
-  the standard-library `compression.zstd`. Older interpreters get a clear error for zstd chunks.
+- Chunk compression: none and LZ4 (pure-Python decoder) everywhere; zstd through the
+  standard-library `compression.zstd` on Python 3.14+, or on any version with the optional
+  `zstandard` package (`pip install "rosbag-inspect[zstd]"`). Without either, zstd chunks give a
+  clear error that says how to fix it.
 - `metadata.yaml` with a small safe YAML parser (no object construction, no anchors or tags).
 - Message definitions from MCAP `ros2msg` schemas, plus a built-in table for `.db3` bags:
   `std_msgs/Header`, `String`, `sensor_msgs/LaserScan`, `Imu`, `JointState`, `Image`,
@@ -199,10 +201,23 @@ wrote 2000 row(s), 41 column(s) to imu.csv
 ```
 
 `echo` prints one JSON object per message; NaN and infinities are written as the strings
-`"NaN"`, `"Infinity"`, `"-Infinity"` so the output stays valid JSON, and large byte arrays appear
-as `{"skipped_bytes": N}`. `export` writes the receive time, `header.stamp` (as `stamp_ns`) and
-every numeric field with dotted column names (fixed-size arrays such as covariances become
-`.0` ... `.35`; variable-length arrays contribute only `name.length`; strings are left out).
+`"NaN"`, `"Infinity"`, `"-Infinity"` so the output stays valid JSON (or as `null` with
+`--nonfinite null`), and large byte arrays appear as `{"skipped_bytes": N}`. `export` writes the
+receive time, `header.stamp` (as `stamp_ns`) and every numeric field with dotted column names
+(fixed-size arrays such as covariances become `.0` ... `.35`; variable-length arrays contribute
+`name.length`; strings are left out). With `--arrays`, every numeric variable-length array is also
+written in full in a column of its own name, as space-separated numbers in Python's shortest
+round-trip form, with non-finite values as `inf`, `-inf` and `nan`:
+
+```console
+$ rosbag-inspect export drive.mcap /scan scan.csv --arrays
+wrote 181 row(s), 15 column(s) to scan.csv
+$ python -c "import csv; r = next(csv.DictReader(open('scan.csv'))); print(r['ranges'][:44])"
+inf inf inf inf inf inf inf inf inf inf 2.46
+```
+
+`float()` reads each value back exactly as it was decoded (float32 values widened to float64),
+so a LaserScan keeps every beam, including the REP 117 `+inf` / `-inf` / `NaN` markers.
 
 On Windows with Git Bash, MSYS rewrites arguments that start with `/` into paths
 (`/scan` becomes `C:/Program Files/Git/scan`). Run with `MSYS_NO_PATHCONV=1` or use PowerShell.
@@ -239,8 +254,10 @@ Run all checks. Exit code: 0 pass, 1 warnings (only with --strict), 2 errors or 
                         allowed deviation of stationary |acceleration| from 9.81 (default 0.5)
   --teleport M          odometry jumps above this between messages are errors (default 0.5 m)
 
-usage: rosbag-inspect echo [-h] [--limit N] bag topic        (default limit 10, 0 = all)
-usage: rosbag-inspect export [-h] bag topic output           (output '-' = stdout)
+usage: rosbag-inspect echo [-h] [--limit N] [--nonfinite {string,null}] bag topic
+                                                             (default limit 10, 0 = all)
+usage: rosbag-inspect export [-h] [--arrays] bag topic output
+                                                             (output '-' = stdout)
 usage: rosbag-inspect info [-h] [--json] bag
 ```
 
@@ -290,7 +307,7 @@ collectors keep only what the checks need (times, stamps, a few numbers per mess
 ## Testing
 
 ```console
-pip install -e ".[dev]"
+pip install -e ".[dev,zstd]"
 ruff check . && ruff format --check . && mypy && pytest --cov
 ```
 
@@ -344,9 +361,9 @@ open an issue.
 
 - `.db3` files carry no message definitions; only the built-in types are decoded from them.
   Other topics get timing checks only (`not_decoded`).
-- zstd-compressed MCAP chunks and per-message zstd compression need Python 3.14+; on 3.10-3.13
-  they produce a clear error. File-level compressed bags (`*.db3.zstd`) must be decompressed
-  first.
+- zstd-compressed MCAP chunks and per-message zstd compression need Python 3.14+ or the
+  optional `zstandard` package (`rosbag-inspect[zstd]`); without either they produce a clear
+  error. File-level compressed bags (`*.db3.zstd`) must be decompressed first.
 - `ros2idl` schemas, `wstring`, parameter-list and delimited CDR encodings are not supported.
 - MCAP attachments and metadata records are ignored. The LZ4 decoder does not verify xxHash
   checksums (the MCAP chunk CRC-32 is verified).
