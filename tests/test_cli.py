@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import json
 import re
+import struct
 import xml.etree.ElementTree as ET
 from html.parser import HTMLParser
 from pathlib import Path
@@ -185,6 +186,44 @@ def test_cli_errors(
     with pytest.raises(SystemExit):
         main(["check", str(fixtures["mcap"]), "--gap-factor", "abc"])
     capsys.readouterr()
+
+
+def _ros1_bag(path: Path) -> Path:
+    """An empty ROS 1 bag: the ``#ROSBAG V2.0`` line and a bag header record (op 0x03) whose
+    fields say there are no connections or chunks, padded to 4096 bytes as rosbag does."""
+
+    def field(name: bytes, value: bytes) -> bytes:
+        return struct.pack("<I", len(name) + 1 + len(value)) + name + b"=" + value
+
+    header = (
+        field(b"op", b"\x03")
+        + field(b"index_pos", struct.pack("<Q", 0))
+        + field(b"conn_count", struct.pack("<I", 0))
+        + field(b"chunk_count", struct.pack("<I", 0))
+    )
+    padding = 4096 - len(header)
+    record = struct.pack("<I", len(header)) + header + struct.pack("<I", padding) + b" " * padding
+    path.write_bytes(b"#ROSBAG V2.0\n" + record)
+    return path
+
+
+def test_ros1_bag_is_named_with_a_conversion_hint(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    bag = _ros1_bag(tmp_path / "old.bag")
+    for command in (["info", str(bag)], ["check", str(bag)], ["echo", str(bag), "/x"]):
+        assert main(command) == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "ROS 1 bag (format V2.0)" in err
+        assert "rosbags-convert --src old.bag" in err
+        assert "not a readable SQLite database" not in err
+    # a directory holding only a ROS 1 bag says the same instead of "no .db3 or .mcap files"
+    assert main(["info", str(tmp_path)]) == EXIT_ERROR
+    assert "this is a ROS 1 bag" in capsys.readouterr().err
+    # a random file still gets the SQLite error
+    (tmp_path / "junk.db3").write_bytes(b"#ROSBAG" + b"\0" * 100)
+    assert main(["info", str(tmp_path / "junk.db3")]) == EXIT_ERROR
+    assert "not a readable SQLite database" in capsys.readouterr().err
 
 
 def test_echo_undecodable_topic(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:

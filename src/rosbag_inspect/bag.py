@@ -246,8 +246,13 @@ def open_bag(path: str | Path) -> Bag:
             )
         files = _find_files(path, metadata, issues)
         if not files:
+            ros1 = sorted(p for p in path.iterdir() if p.is_file() and _is_ros1_bag(p))
+            if ros1:
+                raise BagError(_ros1_message(ros1[0]))
             raise BagError(f"{path}: no .db3 or .mcap files found")
     elif path.is_file():
+        if _is_ros1_bag(path):
+            raise BagError(_ros1_message(path))
         files = [path]
     else:
         raise BagError(f"{path}: no such file or directory")
@@ -334,6 +339,27 @@ def open_bag(path: str | Path) -> Bag:
 def _has_mcap_magic(path: Path) -> bool:
     with path.open("rb") as f:
         return f.read(8) == b"\x89MCAP0\r\n"
+
+
+ROS1_MAGIC = b"#ROSBAG V"
+
+
+def _is_ros1_bag(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(len(ROS1_MAGIC)) == ROS1_MAGIC
+    except OSError:
+        return False
+
+
+def _ros1_message(path: Path) -> str:
+    with path.open("rb") as f:
+        version = f.readline(32).decode("ascii", "replace").strip().removeprefix("#ROSBAG ")
+    return (
+        f"{path}: this is a ROS 1 bag (format {version}), not a ROS 2 bag; rosbag-inspect "
+        "reads rosbag2 SQLite3 and MCAP bags only. Convert it first, for example with "
+        f"'rosbags-convert --src {path.name} --dst <new ros2 bag dir>' (pip install rosbags)"
+    )
 
 
 def _merge_topic(topics: dict[str, Topic], new: Topic) -> Topic:
