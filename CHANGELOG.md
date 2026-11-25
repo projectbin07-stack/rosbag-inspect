@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-11-25
+
+### Added
+
+- `info` shows the per-topic rate (Hz) for MCAP bags, as it did for `.db3` bags. First and last
+  `log_time` per channel come from the MessageIndex records, so no chunk is decompressed; when
+  indexes are missing, damaged or do not cover every message counted in the statistics, the
+  messages are read once instead. Split MCAP bags merge the spans per topic. Library:
+  `Bag.load_time_spans()`, `Bag.rate_hz(topic)`, `McapReader.channel_time_spans()`.
+- `info --json` gives `first_ns`, `last_ns` and `rate_hz` for every topic.
+- Message definitions are read from the `message_definitions` table of `.db3` files written by
+  Iron and later (schema version 4+), so their custom types are decoded like MCAP schemas. A
+  definition is used only when it is complete and decodes the type's first recorded message
+  exactly; otherwise a `schema_not_parsed` note explains why and the built-in definition, if
+  any, stays in use.
+
+### Fixed
+
+- `info` on an MCAP bag printed "-" for every topic's rate (ecosystem audit finding 54).
+- A ROS 1 `.bag` failed with "not a readable SQLite database". It is now recognised by its
+  `#ROSBAG V` header, as a file or as the only bag in a directory, and the error says it is a
+  ROS 1 bag and how to convert it with `rosbags-convert` (exit code 2; finding 46).
+- Schema-version-4 `.db3` bags were decoded with built-in definitions only (finding 43).
+
 ## [0.2.0] - 2026-11-25
 
 ### Added
@@ -50,5 +74,6 @@ All notable changes to this project are documented here. The format follows
   latency histograms, light and dark themes, no JavaScript.
 - Test fixture writers (SQLite3, MCAP, LZ4) and a simulated drive with deliberate faults.
 
+[0.3.0]: https://github.com/projectbin07-stack/rosbag-inspect/releases/tag/v0.3.0
 [0.2.0]: https://github.com/projectbin07-stack/rosbag-inspect/releases/tag/v0.2.0
 [0.1.0]: https://github.com/projectbin07-stack/rosbag-inspect/releases/tag/v0.1.0

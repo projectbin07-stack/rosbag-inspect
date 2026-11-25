@@ -51,10 +51,15 @@ Reading
   `zstandard` package (`pip install "rosbag-inspect[zstd]"`). Without either, zstd chunks give a
   clear error that says how to fix it.
 - `metadata.yaml` with a small safe YAML parser (no object construction, no anchors or tags).
-- Message definitions from MCAP `ros2msg` schemas, plus a built-in table for `.db3` bags:
-  `std_msgs/Header`, `String`, `sensor_msgs/LaserScan`, `Imu`, `JointState`, `Image`,
-  `CompressedImage`, `nav_msgs/Odometry`, `geometry_msgs/Twist`, `TwistStamped`, `PoseStamped`
-  and their dependencies, `tf2_msgs/TFMessage`.
+- Message definitions from MCAP `ros2msg` schemas and from the `message_definitions` table of
+  `.db3` files written by Iron and later (schema version 4+). A stored definition is used only if
+  it is complete and decodes the type's first recorded message exactly; otherwise a note says
+  so. A built-in table covers older `.db3` bags: `std_msgs/Header`, `String`,
+  `sensor_msgs/LaserScan`, `Imu`, `JointState`, `Image`, `CompressedImage`, `nav_msgs/Odometry`,
+  `geometry_msgs/Twist`, `TwistStamped`, `PoseStamped` and their dependencies,
+  `tf2_msgs/TFMessage`.
+- ROS 1 `.bag` files (`#ROSBAG V2.0`) are recognised and rejected with a message that points to
+  `rosbags-convert` instead of a SQLite error.
 - CDR decoder driven by the parsed definitions: primitives, strings, fixed/bounded/unbounded
   arrays, nested types, XCDR1 alignment (and plain XCDR2). Image and other large byte payloads are
   never copied into memory: only their length is recorded.
@@ -127,6 +132,28 @@ rosbag-inspect 0.1.0  drive_sqlite
   storage    sqlite3 (1 file(s))
   sqlite3    schema version 3, ros_distro humble
   metadata   version 5, 5482 messages
+  duration   19.992 s
+  messages   5482
+
+  topic                 count        Hz  type
+  /camera/image_raw       100      5.00  sensor_msgs/msg/Image
+  /cmd_vel                200     10.00  geometry_msgs/msg/Twist
+  /imu                   2000    100.00  sensor_msgs/msg/Imu
+  /joint_states          1000     50.00  sensor_msgs/msg/JointState
+  /odom                  1000     50.00  nav_msgs/msg/Odometry
+  /scan                   181      9.04  sensor_msgs/msg/LaserScan
+  /tf                    1000     50.00  tf2_msgs/msg/TFMessage
+  /tf_static                1         -  tf2_msgs/msg/TFMessage
+```
+
+Since 0.3.0 the same per-topic rates are shown for MCAP files, taken from the MessageIndex
+records (no chunk is decompressed) or, without indexes, from one pass over the messages:
+
+```console
+$ rosbag-inspect info drive.mcap
+rosbag-inspect 0.3.0  drive.mcap
+  storage    mcap (1 file(s))
+  mcap       profile ros2, library rosbag-inspect test writer, 46 indexed chunk(s), summary yes, compression none
   duration   19.992 s
   messages   5482
 
@@ -339,9 +366,9 @@ bags produced by real rosbag2 recorders: the test resources of the
 | Resource | Storage | Notes |
 | --- | --- | --- |
 | `rosbag2_tests/resources/cdr_test` (humble) | `.db3`, schema version 2 | types not built in, timing only |
-| `rosbag2_tests/resources/sqlite3/cdr_test` (rolling) | `.db3`, schema version 4 | as above |
+| `rosbag2_tests/resources/sqlite3/cdr_test` (rolling) | `.db3`, schema version 4 | `test_msgs/Arrays`, `BasicTypes` decoded from `message_definitions` (0.3.0) |
 | `rosbag2_tests/resources/mcap/cdr_test` (rolling) | MCAP, libmcap 0.8.0 | `test_msgs/Arrays`, `BasicTypes` decoded from the schemas |
-| `rosbag2_py/test/resources/{mcap,sqlite3}/talker` (rolling) | MCAP with **zstd** chunks, `.db3` | `rcl_interfaces/Log`, `std_msgs/String` |
+| `rosbag2_py/test/resources/{mcap,sqlite3}/talker` (rolling) | MCAP with **zstd** chunks, `.db3` | `rcl_interfaces/Log`, `std_msgs/String`; `info` rates identical for both (2.00 / 1.99 Hz). The `.db3` stores placeholder definitions (`uint8 level` for `Log`), which are rejected |
 | `rosbag2_tests/resources/mcap/bag_with_topics_and_service_events_and_action` (rolling) | MCAP, libmcap 1.4.0 | service/action event topics |
 | `rosbag2_py/test/resources/mcap/wbag` (rolling) | split MCAP, 5 files | 6074 messages merged |
 
@@ -359,16 +386,17 @@ open an issue.
 
 ## Known limitations
 
-- `.db3` files carry no message definitions; only the built-in types are decoded from them.
-  Other topics get timing checks only (`not_decoded`).
+- `.db3` files before schema version 4 (Humble and older) carry no message definitions; only
+  the built-in types are decoded from them. Other topics get timing checks only (`not_decoded`).
+- ROS 1 bags are not read; convert them with `rosbags-convert` first.
 - zstd-compressed MCAP chunks and per-message zstd compression need Python 3.14+ or the
   optional `zstandard` package (`rosbag-inspect[zstd]`); without either they produce a clear
   error. File-level compressed bags (`*.db3.zstd`) must be decompressed first.
 - `ros2idl` schemas, `wstring`, parameter-list and delimited CDR encodings are not supported.
 - MCAP attachments and metadata records are ignored. The LZ4 decoder does not verify xxHash
   checksums (the MCAP chunk CRC-32 is verified).
-- `info` shows per-topic rates for `.db3` bags only (MCAP statistics give one time span for the
-  whole file).
+- For MCAP files without usable message indexes, `info` reads every message once to get the
+  per-topic rates.
 - Pure Python: reading is roughly 10,000 messages per second on a desktop for the simulated drive
   (5482 messages in about 0.5 s, measured with `check` on Windows 11, Python 3.14); very large bags
   take correspondingly long.
@@ -378,7 +406,6 @@ open an issue.
 
 ## Roadmap
 
-- Per-topic time spans for MCAP `info` from the message indexes.
 - PointCloud2 and NavSatFix sanity checks.
 - TF timing: stale dynamic transforms and lookups that would extrapolate.
 - A `--topics` filter for `check` and a Markdown report for pull-request comments.

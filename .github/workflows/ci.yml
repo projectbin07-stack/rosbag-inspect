@@ -45,6 +45,7 @@ jobs:
           rosbag-inspect --version
           rosbag-inspect info fixtures/drive_sqlite
           rosbag-inspect info fixtures/drive.mcap --json > info.json
+          rosbag-inspect info fixtures/drive_lz4.mcap | grep -E "/imu +2000 +100.00 "
           rosbag-inspect echo fixtures/drive_lz4.mcap /imu --limit 2
           rosbag-inspect export fixtures/drive_nosummary.mcap /odom odom.csv
           rosbag-inspect export fixtures/drive.mcap /scan scan.csv --arrays
