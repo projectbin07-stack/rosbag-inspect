@@ -281,8 +281,9 @@ def _topic_findings(bag: Bag, name: str, state: _TopicState, opts: Options) -> l
                 INFO,
                 name,
                 "Message contents not checked",
-                f"Only timing was checked: {reason}. MCAP files carry definitions; for .db3 "
-                "bags only the built-in common types are decoded.",
+                f"Only timing was checked: {reason}. MCAP files and .db3 files from Iron on "
+                "(message_definitions table) carry definitions; for older .db3 bags only the "
+                "built-in common types are decoded.",
             )
         )
     if state.decode_errors:

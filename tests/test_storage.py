@@ -16,7 +16,7 @@ from rosbag_inspect import bag as bag_module
 from rosbag_inspect import mcap as mcap_module
 from rosbag_inspect.analysis import analyze
 from rosbag_inspect.bag import BagError, open_bag
-from rosbag_inspect.cdr import encode
+from rosbag_inspect.cdr import decode, encode
 from rosbag_inspect.mcap import McapError, McapReader, decompress_chunk
 from rosbag_inspect.msgdef import Registry
 from rosbag_inspect.sqlite_storage import SqliteBagError, SqliteReader
@@ -359,6 +359,90 @@ def test_sqlite_foxy_schema_without_qos(tmp_path: Path) -> None:
         assert [m.log_time for m in bag.messages()] == [10, 20]
 
 
+POSE_BUNDLE = (
+    "float64 x\nfloat64 y\nLabel label\n"
+    "================================================================================\n"
+    "MSG: demo_msgs/Label\nstring text\nuint8 LEFT=1\n"
+)
+
+
+def _iron_bag(tmp_path: Path, definitions: list[tuple[str, str, str]]) -> Path:
+    """A schema-version-4 .db3 as rosbag2 writes it on Iron/Jazzy: a ``message_definitions``
+    table next to ``topics``. /pose carries a type no built-in definition covers."""
+    reg = Registry()
+    reg.add_bundle("demo_msgs/msg/Pose", POSE_BUNDLE)
+    pose = encode(reg, "demo_msgs/msg/Pose", {"x": 1.5, "y": -2.0, "label": {"text": "dock"}})
+    recs = [Record("/pose", "demo_msgs/msg/Pose", S + k * S // 10, pose) for k in range(3)]
+    recs += _string_records("/chatter", [S, 2 * S])
+    directory = tmp_path / "iron"
+    db = write_sqlite_bag(directory, recs, distro="jazzy")
+    con = sqlite3.connect(db)
+    con.executescript(
+        "CREATE TABLE message_definitions(id INTEGER PRIMARY KEY, topic_type TEXT NOT NULL,"
+        " encoding TEXT NOT NULL, encoded_message_definition TEXT NOT NULL,"
+        " type_description_hash TEXT NOT NULL);"
+        "UPDATE schema SET schema_version = 4;"
+    )
+    con.executemany(
+        "INSERT INTO message_definitions (topic_type, encoding, encoded_message_definition,"
+        " type_description_hash) VALUES (?, ?, ?, 'RIHS01_0')",
+        definitions,
+    )
+    con.commit()
+    con.close()
+    return directory
+
+
+def test_sqlite_message_definitions_are_loaded(tmp_path: Path) -> None:
+    directory = _iron_bag(
+        tmp_path,
+        [
+            ("demo_msgs/msg/Pose", "ros2msg", POSE_BUNDLE),
+            ("std_msgs/msg/String", "ros2msg", "string data"),
+            ("demo_msgs/msg/Unused", "ros2msg", "int32 a"),  # no topic: loaded as is
+            ("demo_msgs/msg/Empty", "ros2msg", ""),  # rosbag2 writes "" when it has none
+        ],
+    )
+    with open_bag(directory) as bag:
+        assert bag.details["sqlite3"] == "schema version 4, ros_distro jazzy"
+        assert bag.decodable("/pose")
+        assert bag.topics["/pose"].definition_source == "db3 message_definitions"
+        assert bag.topics["/chatter"].definition_source == "db3 message_definitions"
+        assert "demo_msgs/msg/Unused" in bag.registry
+        assert bag.notes == []
+        raw = next(iter(bag.messages(["/pose"])))
+        assert decode(bag.registry, "demo_msgs/msg/Pose", raw.data) == {
+            "x": 1.5,
+            "y": -2.0,
+            "label": {"text": "dock"},
+        }
+        report = analyze(bag)
+    assert not {"decode_error", "not_decoded"} & {f.code for f in report.findings}
+
+
+@pytest.mark.parametrize(
+    ("definition", "note"),
+    [
+        (("demo_msgs/msg/Pose", "ros2msg", "float64 x"), "does not match its recorded"),
+        (("demo_msgs/msg/Pose", "ros2msg", "float64 x\nfloat64 y\nLabel label"), "incomplete"),
+        (("demo_msgs/msg/Pose", "ros2msg", "float64 x\n!!"), "could not be parsed"),
+        (("demo_msgs/msg/Pose", "ros2idl", "module demo_msgs {};"), "encoding 'ros2idl'"),
+        (("demo_msgs/msg/Pose", "ros2msg", "string x\nstring y\nstring z"), "does not match"),
+    ],
+)
+def test_sqlite_message_definitions_that_do_not_fit_are_not_used(
+    tmp_path: Path, definition: tuple[str, str, str], note: str
+) -> None:
+    # rosbag2's own Iron test bags store abbreviated placeholders such as "uint8 level" for
+    # rcl_interfaces/msg/Log; trusting those would decode garbage.
+    with open_bag(_iron_bag(tmp_path, [definition])) as bag:
+        assert not bag.decodable("/pose")
+        assert bag.topics["/pose"].definition_source == ""
+        assert len(bag.notes) == 1
+        assert note in bag.notes[0]
+        assert bag.decodable("/chatter")  # the built-in definition still applies
+
+
 def test_sqlite_not_a_bag(tmp_path: Path) -> None:
     db = tmp_path / "other.db3"
     con = sqlite3.connect(db)
@@ -472,8 +556,21 @@ def test_message_compressed_sqlite_bag(tmp_path: Path) -> None:
         .replace('compression_mode: ""', "compression_mode: MESSAGE"),
         encoding="utf-8",
     )
+    con = sqlite3.connect(directory / "mbag_0.db3")
+    con.execute(
+        "CREATE TABLE message_definitions(id INTEGER PRIMARY KEY, topic_type TEXT,"
+        " encoding TEXT, encoded_message_definition TEXT, type_description_hash TEXT)"
+    )
+    con.execute(
+        "INSERT INTO message_definitions VALUES (1, 'std_msgs/msg/String', 'ros2msg',"
+        " 'string data', '')"
+    )
+    con.commit()
+    con.close()
     with open_bag(directory) as bag:
         payloads = [m.data for m in bag.messages()]
+        # the stored definition is checked against the decompressed first message
+        assert bag.topics["/a"].definition_source == "db3 message_definitions"
     assert payloads == [r.data for r in _string_records("/a", [S, 2 * S])]
 
 

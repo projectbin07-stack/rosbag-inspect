@@ -9,6 +9,7 @@ from pathlib import Path
 from types import TracebackType
 from typing import NamedTuple
 
+from .cdr import CdrError, decode_with_size
 from .mcap import ZSTD_HELP, McapError, McapReader, _zstd_decompressor
 from .metadata import BagMetadata, MetadataError, read_metadata
 from .msgdef import MsgDefError, Registry, normalize_type
@@ -293,6 +294,7 @@ def open_bag(path: str | Path) -> Bag:
                 sqlite_readers.append(sreader)
                 storages.add("sqlite3")
                 _add_sqlite_topics(sreader, topics)
+                _add_sqlite_definitions(sreader, registry, topics, notes, decompress)
                 details["sqlite3"] = f"schema version {sreader.schema_version}" + (
                     f", ros_distro {sreader.ros_distro}" if sreader.ros_distro else ""
                 )
@@ -396,6 +398,65 @@ def _add_sqlite_topics(reader: SqliteReader, topics: dict[str, Topic]) -> None:
                 t.offered_qos_profiles,
             ),
         )
+
+
+def _add_sqlite_definitions(
+    reader: SqliteReader,
+    registry: Registry,
+    topics: dict[str, Topic],
+    notes: list[str],
+    decompress: Callable[[bytes], bytes] | None,
+) -> None:
+    """Load the ``message_definitions`` table (schema version 4+). A definition is used only
+    when it is complete and, for a type that has messages, decodes the first one exactly
+    (rosbag2's own test bags carry abbreviated placeholder definitions)."""
+
+    def note(text: str) -> None:
+        if text not in notes:
+            notes.append(text)
+
+    for type_name, encoding, text in reader.message_definitions():
+        if not text.strip():
+            continue
+        if encoding != "ros2msg":
+            note(
+                f"message definition of {type_name} uses encoding {encoding!r}; only ros2msg "
+                "definitions are parsed (built-in definitions are used if available)"
+            )
+            continue
+        candidate = Registry()
+        try:
+            candidate.add_bundle(type_name, text)
+            full = normalize_type(type_name)
+            missing = candidate.missing_dependencies(full)
+        except MsgDefError as exc:
+            note(f"message definition of {type_name} could not be parsed: {exc}")
+            continue
+        if missing:
+            note(
+                f"message definition of {type_name} in the .db3 is incomplete (no definition "
+                f"for {', '.join(missing)}); not used"
+            )
+            continue
+        names = [t.name for t in reader.topics if normalize_type_safe(t.type) == full]
+        ids = [t.id for t in reader.topics if t.name in names]
+        sample = next((d for d in map(reader.first_message, ids) if d is not None), None)
+        if sample is not None:
+            if decompress is not None:
+                sample = decompress(sample)
+            try:
+                _, size = decode_with_size(candidate, full, sample, max_bytes=0)
+            except (CdrError, MsgDefError):
+                size = -1
+            if not 0 <= len(sample) - size <= 3:
+                note(
+                    f"message definition of {type_name} in the .db3 does not match its "
+                    "recorded messages; not used (built-in definitions are used if available)"
+                )
+                continue
+        registry.add_bundle(type_name, text)
+        for name in names:
+            topics[name].definition_source = "db3 message_definitions"
 
 
 def _add_mcap_topics(

@@ -8,6 +8,8 @@ Schema (rosbag2 sqlite_storage.cpp; ``offered_qos_profiles`` since schema versio
     messages(id INTEGER PRIMARY KEY, topic_id INTEGER, timestamp INTEGER, data BLOB)
     schema(schema_version INTEGER PRIMARY KEY, ros_distro TEXT)      -- optional
     metadata(id INTEGER PRIMARY KEY, metadata_version INTEGER, metadata TEXT)  -- optional
+    message_definitions(id INTEGER PRIMARY KEY, topic_type TEXT, encoding TEXT,
+           encoded_message_definition TEXT, type_description_hash TEXT)  -- schema 4+, optional
 
 The database is opened read-only. Messages are read in ``(timestamp, id)`` order, which is
 the order rosbag2 itself replays them in.
@@ -79,6 +81,7 @@ class SqliteReader:
             ).fetchone()
             if row is not None:
                 self.schema_version, self.ros_distro = int(row[0]), str(row[1])
+        self.has_message_definitions = "message_definitions" in tables
         qos = "offered_qos_profiles" if "offered_qos_profiles" in columns else "''"
         self.topics = [
             SqliteTopic(int(r[0]), str(r[1]), str(r[2]), str(r[3]), str(r[4]))
@@ -99,6 +102,33 @@ class SqliteReader:
         except sqlite3.DatabaseError as exc:
             raise SqliteBagError(f"{self.path.name}: cannot read messages ({exc})") from exc
         return {int(r[0]): SqliteTopicStats(int(r[1]), int(r[2]), int(r[3])) for r in rows}
+
+    def message_definitions(self) -> list[tuple[str, str, str]]:
+        """``(topic_type, encoding, definition)`` rows of the ``message_definitions`` table that
+        rosbag2 writes since schema version 4 (Iron); empty for older databases."""
+        if not self.has_message_definitions:
+            return []
+        try:
+            rows = self.connection.execute(
+                "SELECT topic_type, encoding, encoded_message_definition "
+                "FROM message_definitions ORDER BY id"
+            ).fetchall()
+        except sqlite3.DatabaseError as exc:
+            raise SqliteBagError(
+                f"{self.path.name}: cannot read message_definitions ({exc})"
+            ) from exc
+        return [(str(r[0]), str(r[1] or ""), str(r[2] or "")) for r in rows]
+
+    def first_message(self, topic_id: int) -> bytes | None:
+        """The complete payload of the earliest message on ``topic_id``, if any."""
+        try:
+            row = self.connection.execute(
+                "SELECT data FROM messages WHERE topic_id = ? ORDER BY timestamp, id LIMIT 1",
+                (topic_id,),
+            ).fetchone()
+        except sqlite3.DatabaseError as exc:
+            raise SqliteBagError(f"{self.path.name}: cannot read messages ({exc})") from exc
+        return None if row is None else bytes(row[0])
 
     def messages(
         self, topic_ids: set[int] | None = None, prefix_only: set[int] | None = None
