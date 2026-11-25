@@ -35,6 +35,29 @@ def test_info_text_and_json(fixtures: dict[str, Path], capsys: pytest.CaptureFix
     assert topics["/imu"]["message_count"] == 2000
     assert topics["/imu"]["definition"] == "mcap schema"
     assert data["message_count"] == 5482
+    # /imu: 2000 messages received at k * 10 ms + 2 ms -> 1999 / 19.99 s = 100 Hz.
+    assert topics["/imu"]["first_ns"] == 1_700_000_000_002_000_000
+    assert topics["/imu"]["rate_hz"] == pytest.approx(100.0)
+    assert topics["/tf_static"]["rate_hz"] is None
+
+
+@pytest.mark.parametrize("layout", ["mcap", "lz4", "unchunked", "nosummary"])
+def test_info_shows_mcap_rates(
+    fixtures: dict[str, Path], capsys: pytest.CaptureFixture[str], layout: str
+) -> None:
+    # Hand-derived from tests/drive.py: /scan has 181 messages received from 10 ms (k = 0) to
+    # 19.914 s (k = 199, latency 14 ms): 180 / 19.904 s = 9.043 Hz; /imu 1999 / 19.99 s = 100 Hz;
+    # /camera/image_raw 99 / 19.8 s = 5 Hz. A single /tf_static message has no rate.
+    assert main(["info", str(fixtures[layout])]) == EXIT_OK
+    out = capsys.readouterr().out
+    assert re.search(r"/scan\s+181\s+9\.04\s+sensor_msgs/msg/LaserScan", out)
+    assert re.search(r"/imu\s+2000\s+100\.00\s", out)
+    assert re.search(r"/camera/image_raw\s+100\s+5\.00\s", out)
+    assert re.search(r"/tf_static\s+1\s+-\s", out)
+    rows = [line.split()[:3] for line in out.splitlines() if line.startswith("  /")]
+    assert main(["info", str(fixtures["sqlite"])]) == EXIT_OK
+    reference = capsys.readouterr().out
+    assert rows == [line.split()[:3] for line in reference.splitlines() if line.startswith("  /")]
 
 
 def test_check_exit_codes_and_json(

@@ -87,6 +87,111 @@ def test_mcap_overlapping_chunks_are_merged_in_time_order(tmp_path: Path) -> Non
     assert [m.log_time - S for m in reader.messages()] == sorted(times)
 
 
+def _rate_records() -> list[Record]:
+    """Hand-checked rates: /a 11 messages every 100 ms (span 1.0 s -> 10 / 1.0 = 10 Hz),
+    /b 4 irregular messages at +0.25, +0.5, +1.0, +1.75 s (span 1.5 s -> 3 / 1.5 = 2 Hz),
+    /c a single message (no rate)."""
+    recs = _string_records("/a", [S + k * S // 10 for k in range(11)])
+    recs += _string_records("/b", [S + S // 4, S + S // 2, 2 * S, S + 7 * S // 4])
+    recs += _string_records("/c", [S + S // 3])
+    return sorted(recs, key=lambda r: r.log_time)
+
+
+RATE_SPANS = {
+    "/a": (S, 2 * S),
+    "/b": (S + S // 4, S + 7 * S // 4),
+    "/c": (S + S // 3, S + S // 3),
+}
+
+
+@pytest.mark.parametrize(
+    "layout",
+    [
+        {"chunk_size": 1},  # one chunk per message: spans come from many message indexes
+        {},
+        {"compression": "lz4", "chunk_size": 200},
+        {"chunked": False},
+        {"summary": False},
+    ],
+)
+def test_mcap_per_topic_time_spans_and_rates(tmp_path: Path, layout: dict[str, object]) -> None:
+    path = tmp_path / "rates.mcap"
+    write_mcap(path, _rate_records(), **layout)  # type: ignore[arg-type]
+    with open_bag(path) as bag:
+        assert all(t.first_ns is None for t in bag.topics.values())
+        bag.load_time_spans()
+        bag.load_time_spans()  # idempotent
+        assert {n: (t.first_ns, t.last_ns) for n, t in bag.topics.items()} == RATE_SPANS
+        assert bag.rate_hz("/a") == pytest.approx(10.0)
+        assert bag.rate_hz("/b") == pytest.approx(2.0)
+        assert bag.rate_hz("/c") is None
+        assert bag.issues == []
+
+
+def test_mcap_time_spans_from_message_index_read_no_chunk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "rates.mcap"
+    write_mcap(path, _rate_records(), chunk_size=200)
+    reader = McapReader(path)
+    assert len(reader.chunk_indexes) > 1
+
+    def no_chunks(*args: object) -> None:
+        raise AssertionError("a chunk was read")
+
+    monkeypatch.setattr(reader, "messages", no_chunks)
+    names = {c.id: c.topic for c in reader.channels.values()}
+    spans = {names[i]: span for i, span in reader.channel_time_spans().items()}
+    assert spans == RATE_SPANS
+
+
+@pytest.mark.parametrize(
+    "damage",
+    ["no_index", "bad_offset", "wrong_channel", "short", "past_end", "missing_channel"],
+)
+def test_mcap_time_spans_fall_back_to_messages(tmp_path: Path, damage: str) -> None:
+    path = tmp_path / "rates.mcap"
+    write_mcap(path, _rate_records(), chunk_size=200)
+    reader = McapReader(path)
+    ci = reader.chunk_indexes[0]
+    channel_id, offset = next(iter(ci.message_index_offsets.items()))
+    if damage == "no_index":
+        ci.message_index_offsets = {}  # writers may omit message indexes
+    elif damage == "bad_offset":
+        ci.message_index_offsets[channel_id] = ci.chunk_start_offset  # points at the chunk
+    elif damage == "wrong_channel":
+        ci.message_index_offsets[channel_id + 100] = offset
+    elif damage == "missing_channel":
+        del ci.message_index_offsets[channel_id]  # statistics count messages no index lists
+    elif damage == "past_end":
+        data = bytearray(path.read_bytes())
+        struct.pack_into("<Q", data, offset + 1, len(data))  # record length runs past the file
+        path.write_bytes(bytes(data))
+    else:
+        data = bytearray(path.read_bytes())
+        struct.pack_into("<I", data, offset + 9 + 2, 1 << 20)  # entry list runs past the record
+        path.write_bytes(bytes(data))
+    names = {c.id: c.topic for c in reader.channels.values()}
+    spans = {names[i]: span for i, span in reader.channel_time_spans().items()}
+    assert spans == RATE_SPANS
+
+
+def test_split_mcap_time_spans_are_merged(tmp_path: Path) -> None:
+    directory = tmp_path / "split"
+    directory.mkdir()
+    write_mcap(
+        directory / "split_0.mcap", _string_records("/a", [S + k * S // 10 for k in range(6)])
+    )
+    write_mcap(
+        directory / "split_1.mcap", _string_records("/a", [S + k * S // 10 for k in range(6, 11)])
+    )
+    with open_bag(directory) as bag:
+        bag.load_time_spans()
+        assert (bag.topics["/a"].first_ns, bag.topics["/a"].last_ns) == (S, 2 * S)
+        assert bag.topics["/a"].message_count == 11
+        assert bag.rate_hz("/a") == pytest.approx(10.0)
+
+
 def test_mcap_truncated_file_is_read_linearly(fixtures: dict[str, Path], tmp_path: Path) -> None:
     data = fixtures["mcap"].read_bytes()
     path = tmp_path / "cut.mcap"

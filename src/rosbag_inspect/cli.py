@@ -174,10 +174,8 @@ def _format_info(bag: Bag, out: TextIO) -> None:
     width = max((len(t) for t in bag.topics), default=5)
     out.write(f"\n  {'topic':<{width}}  {'count':>8}  {'Hz':>8}  type\n")
     for name, topic in bag.topics.items():
-        hz = "-"
-        if topic.first_ns is not None and topic.last_ns is not None and topic.message_count > 1:
-            span = (topic.last_ns - topic.first_ns) / 1e9
-            hz = f"{(topic.message_count - 1) / span:.2f}" if span > 0 else "-"
+        rate = bag.rate_hz(name)
+        hz = f"{rate:.2f}" if rate is not None else "-"
         decoded = "" if bag.decodable(name) else "  (not decodable)"
         out.write(
             f"  {name:<{width}}  {topic.message_count:>8}  {hz:>8}  {topic.type or '?'}{decoded}\n"
@@ -202,6 +200,9 @@ def _info_json(bag: Bag) -> dict[str, object]:
                 "serialization_format": t.serialization_format,
                 "message_count": t.message_count,
                 "metadata_count": t.metadata_count,
+                "first_ns": t.first_ns,
+                "last_ns": t.last_ns,
+                "rate_hz": bag.rate_hz(t.name),
                 "decodable": bag.decodable(t.name),
                 "definition": t.definition_source,
             }
@@ -334,6 +335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         with open_bag(args.bag) as bag:
             if args.command == "info":
+                bag.load_time_spans()
                 if args.json:
                     json.dump(_info_json(bag), sys.stdout, indent=2)
                     sys.stdout.write("\n")

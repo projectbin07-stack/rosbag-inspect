@@ -54,6 +54,7 @@ class Bag:
     _sqlite: list[SqliteReader] = field(default_factory=list)
     _mcap: list[McapReader] = field(default_factory=list)
     _decompress: Callable[[bytes], bytes] | None = None
+    _spans_loaded: bool = False
 
     # -- context management ------------------------------------------------------------------
     def close(self) -> None:
@@ -88,6 +89,35 @@ class Bag:
         values = [t.last_ns for t in self.topics.values() if t.last_ns is not None]
         values += [span[1] for span in map(_mcap_span, self._mcap) if span is not None]
         return max(values) if values else None
+
+    def load_time_spans(self) -> None:
+        """Fill ``first_ns`` / ``last_ns`` of MCAP topics, which the MCAP summary does not carry
+        per channel (SQLite3 topics get them when the bag is opened). Uses the MCAP message
+        indexes when present; otherwise reads the messages once."""
+        if self._spans_loaded:
+            return
+        try:
+            for reader in self._mcap:
+                for channel_id, (first, last) in reader.channel_time_spans().items():
+                    channel = reader.channels.get(channel_id)
+                    topic = self.topics.get(channel.topic) if channel is not None else None
+                    if topic is None:
+                        continue
+                    topic.first_ns = first if topic.first_ns is None else min(topic.first_ns, first)
+                    topic.last_ns = last if topic.last_ns is None else max(topic.last_ns, last)
+                self.issues.extend(i for i in reader.issues if i not in self.issues)
+        except McapError as exc:
+            raise BagError(str(exc)) from exc
+        self._spans_loaded = True
+
+    def rate_hz(self, topic: str) -> float | None:
+        """Average receive rate ``(count - 1) / (last - first)``; None below two messages or
+        when the time span is unknown (call :meth:`load_time_spans` first for MCAP)."""
+        info = self.topics[topic]
+        if info.first_ns is None or info.last_ns is None or info.message_count < 2:
+            return None
+        span = (info.last_ns - info.first_ns) / 1e9
+        return (info.message_count - 1) / span if span > 0 else None
 
     def decodable(self, topic: str) -> bool:
         info = self.topics[topic]

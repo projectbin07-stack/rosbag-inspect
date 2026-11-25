@@ -278,6 +278,14 @@ def _iter_records(data: bytes, what: str) -> Iterator[tuple[int, bytes]]:
         pos += length
 
 
+def _widen(spans: dict[int, tuple[int, int]], channel_id: int, log_time: int) -> None:
+    span = spans.get(channel_id)
+    if span is None:
+        spans[channel_id] = (log_time, log_time)
+    elif log_time < span[0] or log_time > span[1]:
+        spans[channel_id] = (min(span[0], log_time), max(span[1], log_time))
+
+
 class McapReader:
     """Read schemas, channels and messages from an MCAP file."""
 
@@ -294,6 +302,7 @@ class McapReader:
         self.issues: list[str] = []
         self.compressions: set[str] = set()
         self._scanned = False
+        self._spans: dict[int, tuple[int, int]] | None = None
         with self.path.open("rb") as f:
             if f.read(8) != MAGIC:
                 raise McapError(f"{self.path.name}: not an MCAP file (bad magic)")
@@ -420,6 +429,7 @@ class McapReader:
 
     def _linear_metadata(self) -> None:
         counts: dict[int, int] = {}
+        spans: dict[int, tuple[int, int]] = {}
         first = last = None
         total = 0
         for opcode, content in self._linear_records():
@@ -435,10 +445,12 @@ class McapReader:
                 c.u32()
                 log_time = c.u64()
                 counts[channel_id] = counts.get(channel_id, 0) + 1
+                _widen(spans, channel_id, log_time)
                 total += 1
                 first = log_time if first is None else min(first, log_time)
                 last = log_time if last is None else max(last, log_time)
         self._scanned = True
+        self._spans = spans
         if self.statistics is None:
             self.statistics = McapStatistics(
                 total,
@@ -451,6 +463,61 @@ class McapReader:
                 last or 0,
                 counts,
             )
+
+    # -- per-channel time spans --------------------------------------------------------------
+    def channel_time_spans(self) -> dict[int, tuple[int, int]]:
+        """First and last ``log_time`` of every channel that has messages.
+
+        Taken from the MessageIndex records when every chunk in the chunk index has them (no
+        chunk is read or decompressed), from the linear scan done at opening for files without
+        a summary, and otherwise from one pass over the messages."""
+        if self._spans is None:
+            try:
+                spans = self._message_index_spans()
+            except McapError:  # malformed MessageIndex record
+                spans = None
+            if spans is None:
+                spans = {}
+                for msg in self.messages():
+                    _widen(spans, msg.channel_id, msg.log_time)
+            self._spans = spans
+        return self._spans
+
+    def _message_index_spans(self) -> dict[int, tuple[int, int]] | None:
+        if not (self.has_summary and self.chunk_indexes):
+            return None
+        spans: dict[int, tuple[int, int]] = {}
+        indexed: dict[int, int] = {}
+        with self.path.open("rb") as f:
+            for ci in self.chunk_indexes:
+                if not ci.message_index_offsets:
+                    return None  # chunk written without message indexes
+                for channel_id, offset in ci.message_index_offsets.items():
+                    f.seek(offset)
+                    head = f.read(9)
+                    if len(head) < 9 or head[0] != OP_MESSAGE_INDEX:
+                        return None  # not a MessageIndex: fall back to reading the messages
+                    length = struct.unpack_from("<Q", head, 1)[0]
+                    if offset + 9 + length > self.size:
+                        return None
+                    c = _Cursor(f.read(length), "MessageIndex")
+                    if c.u16() != channel_id:
+                        return None
+                    entries = c.raw(c.u32())
+                    count = len(entries) // 16
+                    indexed[channel_id] = indexed.get(channel_id, 0) + count
+                    if count == 0:
+                        continue
+                    times = struct.unpack_from(f"<{2 * count}Q", entries)[0::2]
+                    _widen(spans, channel_id, min(times))
+                    _widen(spans, channel_id, max(times))
+        stats = self.statistics
+        if stats is not None and any(
+            indexed.get(channel_id, 0) != count
+            for channel_id, count in stats.channel_message_counts.items()
+        ):
+            return None  # the indexes miss messages the statistics count: read the messages
+        return spans
 
     # -- messages ----------------------------------------------------------------------------
     def messages(self, channel_ids: set[int] | None = None) -> Iterator[McapMessage]:

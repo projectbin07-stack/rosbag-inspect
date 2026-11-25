@@ -61,3 +61,22 @@ def test_real_arrays_message_content() -> None:
     assert msg["string_values"] == ["Complex Hello1", "Complex Hello2", "Complex Hello3"]
     assert msg["string_values_default"] == ["", "max value", "min value"]
     assert msg["alignment_check"] == 0
+
+
+def test_real_mcap_topic_rates_match_the_sqlite_recording() -> None:
+    # mcap_talker and sqlite_talker hold the same 20 messages. Receive times read from the
+    # .db3: /topic 1585866235112609068 .. 1585866239643508139 (10 messages) -> 9 / 4.530899071 s
+    # = 1.9864 Hz; /rosout 1585866235112411371 .. 1585866239612761798 -> 9 / 4.500350427 s
+    # = 1.9998 Hz.
+    rates = {}
+    for name in ("mcap_talker", "sqlite_talker"):
+        path = Path(str(SAMPLES)) / name
+        if not path.exists():
+            pytest.skip(f"{path} not downloaded")
+        with open_bag(path) as bag:
+            bag.load_time_spans()
+            rates[name] = {t: bag.rate_hz(t) for t in bag.topics}
+    assert rates["mcap_talker"] == rates["sqlite_talker"]
+    assert rates["mcap_talker"]["/topic"] == pytest.approx(9 / 4.530899071)
+    assert rates["mcap_talker"]["/rosout"] == pytest.approx(9 / 4.500350427)
+    assert rates["mcap_talker"]["/parameter_events"] is None
